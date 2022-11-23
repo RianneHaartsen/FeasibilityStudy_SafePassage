@@ -1,0 +1,632 @@
+---
+title: "Safe Passage Brain Responses"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE, include = FALSE}
+packs <-
+  c("dplyr",
+    "ggplot2",
+    "lmerTest")
+lapply(packs, require, character.only = TRUE)
+```
+
+```{r}
+eeg_data <- read.csv("Data/csv/all_meas_new.csv") %>%
+  mutate_if(is.character, function(x)
+    gsub(
+      pattern = "'",
+      replacement = "",
+      x = x
+    ))
+head(eeg_data)
+```
+
+# Clinical & Demographic variables
+
+```{r}
+all_vars <- read.csv("Data/csv/SafePassageSummaryScores.csv") %>%
+  mutate(ELC = rowSums(.[c(139, 144, 149)])) # Early Learning Composite (ELC) = VisualReception_Raw, ReceptiveLanguage_RawScore, ExpressiveLanguage_RawScore
+```
+
+```{r}
+melc <- mean(all_vars$ELC, na.rm = TRUE)
+selc <- sd(all_vars$ELC, na.rm = TRUE)
+vsm <-
+  mean((
+    all_vars$RecpetiveLanguage_Tscore + all_vars$ExpressiveLanguage_Tscore
+  ) / 2,
+  na.rm = TRUE
+  )
+vss <-
+  sd((
+    all_vars$RecpetiveLanguage_Tscore + all_vars$ExpressiveLanguage_Tscore
+  ) / 2,
+  na.rm = TRUE
+  )
+vrm <- mean(all_vars$VisualReception_Tscore, na.rm = TRUE)
+vrs <- sd(all_vars$VisualReception_Tscore, na.rm = TRUE)
+
+all_vars <- all_vars %>%
+  mutate(
+    ELC.st = 100 + (ELC - melc) * (15 / selc),
+    FIQ_ELC = ifelse(is.na(FSIQ), ELC.st, FSIQ),
+    
+    VS = 100 + (((RecpetiveLanguage_Tscore + ExpressiveLanguage_Tscore) /
+                   2
+    ) - vsm) * (15 / vss),
+    VR = 100 + (VisualReception_Tscore - vsm) * (15 / vrs),
+    
+    VCI_alt = ifelse(is.na(VCI), VS, VCI),
+    PRI_alt = ifelse(is.na(PRI), VR, PRI),
+    
+    age.group = ifelse(Age_yrs < 6, 1, ifelse(
+      Age_yrs < 11 & Age_yrs >= 6, 2, ifelse(Age_yrs >= 11, 3, NA)
+    ))
+  ) 
+```
+
+```{r}
+cl_demo_vars <- all_vars[!duplicated(all_vars$Subject),] %>%
+  select(
+    Subject,
+    Gender,
+    Age_yrs,
+    #age.group,
+    FIQ_ELC,
+    # COLIFE,
+    VCI_alt,
+    PRI_alt,
+    # VisualReception_Tscore,
+    # RecpetiveLanguage_Tscore,
+    # ExpressiveLanguage_Tscore,
+    #OLIFE_Mother,
+    # maritalStatus,
+    #Employed..0.no.1.yes.,
+    #educationYears,
+    #BMI...kg.m_.,
+    household_income,
+    # typeHouse,
+    #phone..0.no.1.yes.,
+    #water..0.no.1.yes.,
+    #toilet..0.no.1.yes.,
+    # Risk_TOTAL,
+    # Protective_TOTAL,
+    #Edinburgh.score,
+    #PARITY..life.birth.,
+    #CigsPerDayPreg,
+    #TotalStdDrinksPreg,
+    #Preterm...0.no.1.yes.,
+    SDQ_tot,
+    CARS_Total_Raw
+  ) %>%
+  rename(id = Subject) %>%
+  mutate(id = gsub(
+    pattern = "002-BISH-",
+    replacement = "P",
+    x = id
+  ))
+```
+
+# Session info from tracker
+
+```{r}
+tracker <- read.csv("Data/csv/tracker.csv")
+tracker <- tracker[!duplicated(tracker$id),] %>%
+  select(-c(17:21)) %>%
+  mutate_if(is.character, function(x)
+    gsub(
+      pattern = " ",
+      replacement = "",
+      x = x
+    )) %>%
+  select(id, age_ymd, time_capping_m)
+```
+
+# ET Data
+
+```{r}
+et_data <- read.csv("Data/csv/et_data.csv") %>%
+  mutate(cond = ifelse(event == "FACE_EN.mp4", "social", "non-social")) %>%
+  group_by(id, cond) %>%
+  summarise_at(.vars = 6:11, mean)
+```
+
+# Merge all datasets
+
+```{r}
+eeg_data_m <- eeg_data %>%
+  left_join(cl_demo_vars, by = "id") %>%
+  left_join(et_data, by = c("id", "cond")) %>%
+  left_join(tracker, by = "id")
+ds <- filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95)
+```
+
+# Descriptive Statistics
+
+```{r}
+summ.all <- ds %>%
+  filter(!if_all(Gender:CARS_Total_Raw, is.na)) %>%
+  group_by(id, Gender, Age_yrs, VCI_alt, PRI_alt, FIQ_ELC, CARS_Total_Raw, SDQ_tot, household_income, time_capping_m) %>%
+  summarise(et_looking_prop = mean(et_looking_prop, na.rm=TRUE)) %>%
+  as.data.frame() %>%
+  summarise(N=n(),
+            `N fem`=sum(Gender=="Female", na.rm = TRUE),
+            `M:F`=round(sum(Gender=="Male", na.rm = TRUE)/sum(Gender=="Female", na.rm = TRUE), 2),
+            `Age (SD)`= paste0(round(mean(Age_yrs, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(Age_yrs, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(Age_yrs, na.rm=TRUE)-min(Age_yrs, na.rm=TRUE), 2),
+                                 ")"),
+            `VCI (SD)`= paste0(round(mean(VCI_alt, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(VCI_alt, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(VCI_alt, na.rm=TRUE)-min(VCI_alt, na.rm=TRUE), 2),
+                                 ")"),
+            `PRI (SD)`= paste0(round(mean(PRI_alt, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(PRI_alt, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(PRI_alt, na.rm=TRUE)-min(PRI_alt, na.rm=TRUE), 2),
+                                 ")"),
+            ELC =  paste0(round(mean(FIQ_ELC, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(FIQ_ELC, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(FIQ_ELC, na.rm=TRUE)-min(FIQ_ELC, na.rm=TRUE), 2),
+                                 ")"),
+            `CARS (SD)`= paste0(round(mean(CARS_Total_Raw, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(CARS_Total_Raw, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(CARS_Total_Raw, na.rm=TRUE)-min(CARS_Total_Raw, na.rm=TRUE), 2),
+                                 ")"),
+            `SDQ (SD)`= paste0(round(mean(SDQ_tot, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(SDQ_tot, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(SDQ_tot, na.rm=TRUE)-min(SDQ_tot, na.rm=TRUE), 2),
+                                 ")"),
+            household_income = paste0(round(mean(household_income, na.rm=TRUE), 2),
+                               " (",
+                               round(sd(household_income, na.rm=TRUE), 2),
+                               ", ",
+                               round(max(household_income, na.rm=TRUE)-min(household_income, na.rm=TRUE), 2),
+                               ")"),
+            et_looking_prop = paste0(round(mean(et_looking_prop, na.rm=TRUE), 2),
+                               " (",
+                               round(sd(et_looking_prop, na.rm=TRUE), 2),
+                               ", ",
+                               round(max(et_looking_prop, na.rm=TRUE)-min(et_looking_prop, na.rm=TRUE), 2),
+                               ")"),
+            time_capping_m = paste0(round(mean(time_capping_m, na.rm=TRUE), 2),
+                               " (",
+                               round(sd(time_capping_m, na.rm=TRUE), 2),
+                               ", ",
+                               round(max(time_capping_m, na.rm=TRUE)-min(time_capping_m, na.rm=TRUE), 2),
+                               ")")
+            ) 
+tab_sum <- summ.all %>% t() %>% as.data.frame() %>%
+  tibble::rownames_to_column(" ")
+tab_sum
+```
+
+```{r}
+ds %>%
+  filter(!if_all(Gender:CARS_Total_Raw, is.na)) %>%
+  distinct(id, Age_yrs, FIQ_ELC) %>%
+  filter(Age_yrs>6) %>%
+  summarise(N=n(),
+            paste0(round(mean(FIQ_ELC, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(FIQ_ELC, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(FIQ_ELC, na.rm=TRUE)-min(FIQ_ELC, na.rm=TRUE), 2),
+                                 ")"))
+ds %>%
+  filter(!if_all(Gender:CARS_Total_Raw, is.na)) %>%
+  distinct(id, Age_yrs, FIQ_ELC) %>%
+  filter(Age_yrs<=6) %>%
+  summarise(N=n(),
+            paste0(round(mean(FIQ_ELC, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(FIQ_ELC, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(FIQ_ELC, na.rm=TRUE)-min(FIQ_ELC, na.rm=TRUE), 2),
+                                 ")"))
+ds %>%
+  filter(!if_all(Gender:CARS_Total_Raw, is.na)) %>%
+  group_by(cond) %>%
+  summarise(paste0(round(mean(et_looking_prop, na.rm=TRUE), 2),
+                                 " (",
+                                 round(sd(et_looking_prop, na.rm=TRUE), 2),
+                                 ", ",
+                                 round(max(et_looking_prop, na.rm=TRUE)-min(et_looking_prop, na.rm=TRUE), 2),
+                                 ")"))
+```
+
+Filtering:
+
+-   Number of clean epochs: We use 20 trials as a minimum amount, so
+    exclude data with less than 20 trials.
+
+-   r-squared for the fit of the model from Fitting of one over f
+    (FOOOF): a value below .95 is considered bad, so exclude for
+    analyses with FOOOF measures: FOOOFIntercept, FOOOFSlope,
+    PeriodicPeakFrequency, PeriodicPeakAmplitude, PeriodicPower (This
+    value is identical across frequency bands of interest because it is
+    fitted from 1 to 30Hz).
+
+# N kids showing peaks in alpha/range as bar graph
+
+Purpose: information on inclusion
+
+```{r}
+eeg_data_m %>%
+  filter(!is.nan(per.pk.fr)) %>%
+  select(id, f.b, reg, cond) %>%
+  group_by(f.b, reg, cond) %>%
+  ggplot(aes(f.b)) +
+  geom_bar(aes(fill = reg), width = 0.5) +
+  facet_grid( ~ cond) +
+  theme(axis.text.x = element_text(angle = 65, vjust = 0.6)) +
+  labs(
+    title = "",
+    subtitle = "",
+    x = "Frequency Band",
+    y = "N of Trials",
+    fill = "Region"
+  ) +
+  theme_bw()
+
+```
+
+# Data Quantity
+
+DVs:
+
+1.  N of clean epochs
+
+2.  Fit error
+
+Predictors:
+
+-   Condition
+
+-   Environmental variables:
+
+    -   visual attention
+
+    -   capping time
+
+-   Phenotype:
+
+    -   Age
+
+    -   Gender
+
+    -   FIQ
+
+    -   SDQ
+
+    -   CARS
+
+    -   Household income
+
+    -   Condition \* Age
+
+## DV = N of clean epochs
+
+This measure is identical across frequency bands and regions (alpha and
+Frontal have been selected, but theta will retain same result).
+
+```{r}
+m_nce <-
+  lmer(
+    data = filter(ds, f.b == "theta" & reg == "Frontal"),
+    n.clean.ep ~ cond * Age_yrs + et_looking_prop + time_capping_m +
+      Gender + FIQ_ELC + SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 | id)
+  )
+summ_nce <- m_nce %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_nce
+```
+The number of clean epochs is significantly influenced by the Eye-Tracking Looking Proportion (positive).
+
+## DV = Foof fit error
+
+This measure is identical across frequency bands and regions (alpha and
+Frontal have been selected, but theta will retain same result).
+
+```{r}
+m_rsq <-
+  lmer(
+    data = filter(eeg_data_m, f.b == "alpha" & reg == "Frontal"),
+    foof.rsq ~ cond * Age_yrs + et_looking_prop + time_capping_m +
+      Gender + FIQ_ELC + SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 | id)
+  )
+summ_rsq <- m_rsq %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_rsq
+```
+
+The foof fit error is significantly influenced by Age (negative).
+
+# Condition Estimates
+
+DVs:
+
+1.  Canonical power theta
+
+2.  Canonical power alpha
+
+3.  1/f intercept
+
+4.  1/f slope
+
+5.  Frequency of periodic peak in theta range
+
+6.  Amplitude of periodic peak in theta range
+
+7.  Frequency of periodic peak in alpha range
+
+8.  Frequency of periodic peak in alpha range
+
+9.  Periodic power theta
+
+10. Periodic power alpha
+
+Predictors:
+
+-   Number of clean epochs
+
+-   Age
+
+-   Gender
+
+-   FIQ
+
+-   SDQ
+
+-   CARS
+
+-   Household income
+
+-   Condition \* Age
+
+Each table includes the type of effect (fixed, random), grouping (just for random effects), term (meaning the predictor), estimate (meaning the coefficient, a measure of the unstandardized effect size for that
+predictor), standard error, statistic (meaning the T-value or distance form 0) and p-value. A brief paragraph summarizes which predictors are significantly associated with the DV, and the direction of the association in parenthesis (positive/negative, e.g., a positive association means that for higher values of the predictor, the DV also takes higher values, while a negative association means that for higher
+values of the predictor, the DV takes lower values).
+
+## DV = Canonical Power Theta
+
+```{r}
+m_powT <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & f.b == "theta"),
+    can.pow ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summary(m_powT)
+summ_powT <- m_powT %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_powT
+```
+
+The Canonical Theta Power is significantly influenced by the N of Clen Epochs (negative), Condition (in the social condition: positive), Age (negative), and the interaction of condition by age (negative).
+
+## DV = Canonical Power Alpha
+
+```{r}
+m_powA <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & f.b == "alpha"),
+    can.pow ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_powA <- m_powA %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_powA
+```
+
+The Canonical Alpha Power is significantly influenced by Age (negative).
+
+## DV = 1/f intercept
+
+This measure is identical across frequency bands (alpha has been
+selected, but theta will retain same result).
+
+```{r}
+m_1fint <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "theta"),
+    foof.int ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_1fint <- m_1fint %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_1fint
+```
+
+The 1/f Intercept is significantly influenced by the N of Clean Epochs (negative) and Age (negative).
+
+## DV = 1/f slope
+
+This measure is identical across frequency bands (alpha has been
+selected, but theta will retain same result).
+
+```{r}
+m_1fsl <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "alpha"),
+    foof.sl ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_1fsl <- m_1fsl %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_1fsl
+```
+
+The 1/f Slope is significantly influenced by the N of Clean Epochs (negative).
+
+## DV = Frequency of periodic peak in theta range
+
+```{r}
+m_ppfT <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "theta"),
+    per.pk.fr ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppfT <- m_ppfT %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_ppfT
+```
+
+The frequency of periodic peak in theta range is significantly influenced by condition (in social condition: positive), FIQ (negative), CARS (negative), and the interaction of condition by age (negative).
+
+## DV = Amplitude of periodic peak in theta range
+
+```{r}
+m_ppaT <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "theta"),
+    per.pk.amp ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppaT <- m_ppaT %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_ppaT
+```
+
+The amplitude of periodic peak in theta range is significantly influenced by condition (in social condition: positive) and the interaction of condition by age (negative).
+
+## DV = Frequency of periodic peak in alpha range
+
+```{r}
+m_ppfA <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "alpha"),
+    per.pk.fr ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppfA <- m_ppfA %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_ppfA
+```
+
+The frequency of periodic peak in alpha range is significantly influenced by condition (positive), Age (positive) and the interaction of condition by age (negative).
+
+## DV = Frequency of periodic peak in alpha range
+
+```{r}
+m_ppaA <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "alpha"),
+    per.pk.amp ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppaA <- m_ppaA %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_ppaA
+```
+
+The amplitude of periodic peak in alpha range is significantly influenced by Age (negative) and household income (negative).
+
+## DV = Periodic power theta
+
+```{r}
+m_ppT <-
+  lmer(
+    data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 &
+                    f.b == "theta"),
+    per.pow ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppT <- m_ppT %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x)
+    round(x, 4)) %>%
+  flextable::flextable()
+summ_ppT
+```
+
+The periodic power in theta range is significantly influenced by condition (in social: positive), age (negative) and the interaction of condition by age (negative).
+
+## DV = Periodic power alpha
+
+```{r}
+m_ppA <-
+  lmer(data = filter(eeg_data_m, n.clean.ep > 20 & foof.rsq > 0.95 & f.b == "alpha"),
+    per.pow ~ n.clean.ep + cond * Age_yrs + Gender + FIQ_ELC +
+      SDQ_tot + CARS_Total_Raw + scale(household_income) +
+      (1 + reg | id)
+  )
+summ_ppA <- m_ppA %>%
+  broom.mixed::tidy() %>%
+  mutate_if(is.numeric, function(x) round(x, 4)) %>%
+  flextable::flextable()
+summ_ppA
+```
+
+The periodic power in alpha range is significantly influenced by the N of clean epochs (positive) and household income (negative).
